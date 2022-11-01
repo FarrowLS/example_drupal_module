@@ -1,0 +1,399 @@
+<?php
+
+/**
+ * @file
+ *
+ * Contains example_multi_user_message.module.
+ */
+
+use \Drupal\Core\Form\FormStateInterface;
+use \Drupal\Core\Entity\EntityInterface;
+use Drupal\user\Entity\User;
+use \Drupal\Core\Url;
+
+/**
+ * Notifies admin about Private Message activity
+ *
+ * @param $type_of_message
+ * @param $user_sending_private_message
+ * @param $total_number_of_messages
+ *
+ * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
+ * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
+ */
+function notify_admin_about_private_messages($type_of_message, $user_sending_private_message, $total_number_of_messages) {
+  $entity = \Drupal::entityTypeManager()->getStorage('user');
+  $query = $entity->getQuery();
+
+  /* REMOVE WHEN NOT NEEDED
+  ksm('$user_sending_private_message');
+  ksm($user_sending_private_message);
+  ksm($user_sending_private_message->toUrl()->toUriString());
+  // toUrl($rel = 'canonical', array $options = array())
+  */
+
+  // Get admins
+  $admin_ids = $query
+    ->condition('status', 1)
+    ->condition('roles', 'administrator')
+    // ->pager(20)
+    ->execute();
+  $to = '';
+  foreach ($admin_ids as $admin_id) {
+    $to = User::load($admin_id)->getEmail() . ', ' .  $to;
+  }
+
+  $mailManager = \Drupal::service('plugin.manager.mail');
+  $module = 'example_multi_user_message';
+  $key = 'notify_admin_about_private_messages';
+  $admin_user = User::load(1);
+  $langcode = $admin_user->getPreferredLangcode();
+
+  if ($type_of_message == 'over_limit') {
+    $params['title'] = t('User %user_name has tried to send more private messages than they are allowed to',
+      ['%user_name' => $user_sending_private_message->field_full_name->value]);
+
+    $params['message'] = t('User %user_name has tried to send more private messages than they are allowed to.',
+      ['%user_name' => $user_sending_private_message->field_full_name->value]);
+
+    /* REMOVE WHEN NOT NEEDED
+    $params['message'] = t('User %user_name has tried to send more private messages than they are allowed to. You can view their account here: %user_url',
+      ['%user_name' => $user_sending_private_message->field_full_name->value,
+       '%user_url' => \Drupal::request()
+          ->getScheme() . '://' . \Drupal::request()
+          ->getHost() . $user_sending_private_message->url()
+    ]);
+    */
+  }
+
+  // By default this is a 'notification_of_number' email
+  else {
+    $params['title'] = t('User %user_name has send %number_of_messages private messages in the last 24 hours',
+      ['%user_name' => $user_sending_private_message->field_full_name->value,
+       '%number_of_messages' => $total_number_of_messages]);
+    $params['message'] = t('User %user_name has send %number_of_messages private messages in the last 24 hours',
+      ['%user_name' => $user_sending_private_message->field_full_name->value,
+       '%number_of_messages' => $total_number_of_messages]);
+  }
+
+  $send = TRUE;
+  $result = $mailManager->mail($module, $key, $to, $langcode, $params, NULL, $send);
+
+  if ($result['result'] != TRUE) {
+    \Drupal::logger('mail-log')
+      ->error(t('There was a problem notifying the admins about Private Message activity for %user_name',
+        ['%user_name' => $user_sending_private_message->getDisplayName()]));
+  }
+  else {
+    \Drupal::logger('mail-log')
+      ->notice(t('The admins have been notified about Private Message activity for %user_name',
+        ['%user_name' => $user_sending_private_message->getDisplayName()]));
+  }
+}
+
+
+/**
+ * Counts number of Private Messages being sent
+ *
+ * @return int|void
+ * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
+ * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
+ */
+function number_of_private_messages_being_sent() {
+  $number_of_messages_to_be_sent = 0;
+
+  // New private message
+  if (isset($_GET['recipient']) and $_GET['recipient']) {
+    $number_of_messages_to_be_sent = 1;
+  }
+
+  // New multi-user private message
+  elseif (isset($_GET['recipients']) and $_GET['recipients']) {
+    $user_ids_from_path = explode(',', $_GET['recipients']);
+    $number_of_messages_to_be_sent = count($user_ids_from_path) + $number_of_messages_to_be_sent;
+  }
+
+  // Handles existing private message threads
+  else {
+    $path = \Drupal::request()->getpathInfo();
+    $arg = explode('/', $path);
+    if (in_array('private-messages', $arg)) {
+      $message_thread_id = $arg[2];
+      $entity_storage = \Drupal::entityTypeManager()->getStorage('private_message_thread');
+      $message_thread = $entity_storage->load($message_thread_id);
+
+      // # of users in group besides person posting
+      $number_of_messages_to_be_sent = (count($message_thread->getMembersId()) - 1) + $number_of_messages_to_be_sent;
+    }
+  }
+  return $number_of_messages_to_be_sent;
+}
+
+
+/**
+ * Determines if a should Private Message should be sent
+ *
+ * @param bool $validation
+ *
+ * @return bool
+ * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
+ * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
+ */
+function should_private_message_be_sent($validation = FALSE) {
+  $user_sending_private_message = User::load(\Drupal::currentUser()->id());
+  $should_private_message_be_sent = FALSE;
+  $number_of_messages_user_sent = \Drupal::service('count_private_messages')
+    ->countPrivateMessagesSent($user_sending_private_message->id());
+  $number_of_messages_a_user_may_send = \Drupal::service('count_private_messages')
+    ->numberMessagesUserMaySend();
+
+  $number_of_messages_to_be_sent = 0;
+
+  // New private message
+  if ((isset($_GET['recipient']) and $_GET['recipient']) or
+      (isset($_GET['recipients']) and $_GET['recipients'])) {
+
+    $number_of_messages_to_be_sent = number_of_private_messages_being_sent();
+    $total_number_of_messages = $number_of_messages_user_sent + $number_of_messages_to_be_sent;
+
+    if ($total_number_of_messages <= $number_of_messages_a_user_may_send) {
+      $should_private_message_be_sent = TRUE;
+
+      if ($total_number_of_messages > 5 and $validation == TRUE) {
+        notify_admin_about_private_messages('notification_of_number',
+                                            $user_sending_private_message,
+                                            $total_number_of_messages);
+      }
+    } else {
+      // Notifiy admin here
+      notify_admin_about_private_messages('over_limit',
+                                          $user_sending_private_message,
+                                          $total_number_of_messages);
+    }
+  }
+
+  // Other cases
+  else {
+    $number_of_messages_to_be_sent = number_of_private_messages_being_sent();
+    $total_number_of_messages = $number_of_messages_user_sent + $number_of_messages_to_be_sent;
+
+    if ($total_number_of_messages > 5 and $validation == TRUE) {
+      notify_admin_about_private_messages('notification_of_number',
+        $user_sending_private_message,
+        $total_number_of_messages);
+    }
+
+    $should_private_message_be_sent = TRUE;
+  }
+
+  return $should_private_message_be_sent;
+}
+
+/**
+ * Implements hook_mail().
+ *
+ * @param $key
+ * @param $message
+ * @param $params
+ */
+function example_multi_user_message_mail($key, &$message, $params) {
+
+  $options = array(
+    'langcode' => $message['langcode'],
+  );
+
+  switch ($key) {
+
+    // TODO: Look at --> https://www.zyxware.com/articles/5504/drupal-8-how-to-send-a-mail-programmatically-in-drupal-8
+
+    case 'notify_admin_about_private_messages':
+      // TODO: Do I need headers here?
+      $message['from'] = \Drupal::config('system.site')->get('mail');
+
+      // $message['subject'] = t('Article created: @title', array('@title' => $params['node_title']), $options);
+      // $message['subject'] = t('Admin notification email');
+      $message['subject'] = $params['title'];
+      $message['body'][] = $params['message'];
+
+      break;
+  }
+}
+
+/**
+ * Implements hook_page_attachments
+ *
+ * @param array $attachments
+ */
+function example_multi_user_message_page_attachments(array &$attachments) {
+  $attachments['#attached']['library'][] = 'example_multi_user_message/example_multi_user_message';
+}
+
+/**
+ * hook_views_post_render()
+ *
+ * TODO: Move this hook to reports module
+ *
+ * @param \Drupal\views\ViewExecutable $view
+ */
+function example_multi_user_message_views_post_render(\Drupal\views\ViewExecutable $view) {
+  if ($view->id() == 'private_messages_report_v2' and $view->current_display == 'page_2') {
+
+    $user_ids = [];
+
+    foreach ($view->result as $result_row) {
+      foreach ($result_row->_entity->getMembersId() as $user_id_row) {
+        if (!in_array($user_id_row, $user_ids)) {
+          array_push($user_ids, $user_id_row);
+        }
+      }
+    }
+    $view->display_handler->handlers['footer']['area']->options['content']['value'] = "Number of members involved with private message threads during this time period: " . count($user_ids);
+  }
+}
+
+/**
+ * Implements hook_form_alter().
+ *
+ * @param $form
+ * @param \Drupal\Core\Form\FormStateInterface $form_state
+ * @param $form_id
+ */
+/*
+function example_multi_user_message_form_alter( &$form, FormStateInterface $form_state, $form_id ) {
+  // ksm('EMPTY example_multi_user_message_form_alter FIRED');
+}
+*/
+
+/**
+ * Multi user message custom form hook
+ *
+ * Implements hook_form_FORM_ID_alter().
+ *
+ * @param $form
+ * @param \Drupal\Core\Form\FormStateInterface $form_state
+ * @param $form_id
+ */
+function example_multi_user_message_form_private_message_add_form_alter(&$form, FormStateInterface $form_state, $form_id ) {
+
+  // Make updates to Member Search Private Message form
+  $routename = \Drupal::routeMatch()->getRouteName();
+
+  if ($routename == 'example_multi_user_message.multi_user_message_form') {
+    $user_ids = $_GET['recipients'];
+
+    if ($user_ids) {
+      $form['message']['widget'][0]['#format'] = 'plain_text';
+      $form['members'] = add_users_to_form($form['members'], $user_ids);
+      $form['message']['widget'][0]['#description'] = t('Write your message below. You may want to include a link to a STEMTLnet group so you can start having <strong>discussions</strong> and <strong>webinars</strong> with them.');
+      $form['actions']['submit']['#value'] = t('Send');
+
+      // May need to do more to hide fields but preserve values - https://www.drupal.org/forum/support/post-installation/2010-02-28/hide-form-fields-and-fill-in-a-default-value
+    }
+  }
+
+  if ($routename == 'entity.private_message_thread.canonical' or
+      $routename == 'private_message.private_message_create' or
+      $routename == 'example_multi_user_message.multi_user_message_form') {
+
+    $send_message = should_private_message_be_sent();
+
+    if ($send_message == FALSE) {
+      $form['message']['widget'][0]['#attributes']['disabled'] = 'disabled';
+      $form['message']['widget'][0]['#attributes']['class'][] = 'is-invalid ';
+      $form['message']['widget'][0]['#placeholder'] = t('Sorry...You can not send this message as there is a limit of 25 messages within a 24 hour period. Try sending the message again later.');
+      $form['actions']['#access'] = FALSE;
+    }
+
+    $form['#validate'][] = 'private_message_add_form_validation';
+  }
+}
+
+/**
+ * Form validation for example_multi_user_message_form_private_message_add_form_alter
+ *
+ * @param $form
+ * @param \Drupal\Core\Form\FormStateInterface $form_state
+ */
+function private_message_add_form_validation(&$form, FormStateInterface $form_state) {
+
+  if ($form_state->hasValue('message')) {
+    $send_message = should_private_message_be_sent(TRUE);
+
+    if ($send_message == FALSE) {
+      $form_state->setErrorByName('message', t('Sorry...You can not send this message as there is a limit of 25 messages within a 24 hour period. Try sending the message again later.'));
+    }
+  }
+}
+
+/**
+ * @param $members
+ * @param $users_to_add
+ *
+ * @return mixed
+ */
+function add_users_to_form(&$members, $users_to_add) {
+  $current_user_id = \Drupal::currentUser()->id();
+  $users_to_add = explode(",", $users_to_add);
+  $count = 0;
+
+  foreach ($users_to_add as $user_to_add) {
+    if ($user_to_add !== $current_user_id) {
+      $user = User::load($user_to_add);
+      $members['widget'][$count] = $members['widget'][0];
+      $members['widget'][$count]['target_id']['#default_value'] = $user;
+      $count++;
+    }
+  }
+
+  return $members;
+}
+
+/**
+ * hook_preprocess_views_view_field()
+ *
+ * @param $variables
+ */
+function example_multi_user_message_preprocess_views_view_field(&$variables) {
+
+  $view = $variables['view'];
+  $field = $variables['field'];
+
+  if ($view->storage->id() == 'member_solr_v2' &&
+      $view->current_display == 'block_1' &&
+      $field->field == 'uid') {
+        $variables['output'] = \Drupal\Core\Render\Markup::create('<input class="form-check-input" type="checkbox" value="" id="' . $field->original_value . '">');
+  }
+}
+
+/**
+ * Implements hook_entity_insert().
+ *
+ * Note: Refactor to using hook_ENTITY_TYPE_insert if this hook becomes large
+ *
+ * @param \Drupal\Core\Entity\EntityInterface $entity
+ */
+function example_multi_user_message_entity_insert(Drupal\Core\Entity\EntityInterface $entity) {
+  $entity_type_id = $entity->getEntityTypeId();
+    if ($entity->getEntityTypeId() == "message") {
+      if ($entity->bundle() == 'private_message_notification') {
+
+        $routename = \Drupal::routeMatch()
+          ->getRouteName(); // Use to determine which form is being used?
+
+        // ksm('$routename');
+        // ksm($routename);
+
+        if ($routename == 'example_multi_user_message.multi_user_message_form') {
+
+
+          // Create message if coming from specific URL?
+          // ksm('Created a private message from multi user message form?'); // <-- Worked for creation from multi form and filtering out existing thread form
+
+
+          // Your comment has been posted.
+          \Drupal::messenger()->addMessage('Your private message has been posted.');
+
+        }
+      }
+  }
+}

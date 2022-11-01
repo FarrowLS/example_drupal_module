@@ -1,0 +1,9 @@
+example_multi_user_message.multi_user_message_form:
+  path: '/multi-user-private-message/create'
+  defaults:
+    # Calls the form.add controller, defined in the private message entity.
+    _entity_form: private_message.add
+    _title: 'Create Multi User Message'
+  requirements:
+    _entity_create_access: 'private_message'
+

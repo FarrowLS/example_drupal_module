@@ -1,0 +1,6 @@
+services:
+  count_private_messages:
+    class: '\Drupal\example_multi_user_message\Service\CountPrivateMessages'
+
+  notify_admin_about_private_messages:
+    class: '\Drupal\example_multi_user_message\Service\NotifyAdminAboutPrivateMessages'

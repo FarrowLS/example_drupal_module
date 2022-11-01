@@ -1,0 +1,11 @@
+name: 'Example Multi User Message'
+type: module
+description: 'Module to be able to send a message to multiple users using pre-populated user data based on private message module'
+core: 8.x
+core_version_requirement: ^8 || ^9
+package: 'Custom'
+dependencies:
+  - group
+  - message
+  - message_notify
+  - private_message

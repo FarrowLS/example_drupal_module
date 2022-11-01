@@ -1,0 +1,8 @@
+example_multi_user_message:
+  version: 1.x
+  js:
+    js/example_multi_user_message_results_setup.js: {}
+    js/example_multi_user_message_submit.js: {}
+  dependencies:
+    - core/jquery
+    - core/drupalSettings
